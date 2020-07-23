@@ -207,10 +207,15 @@ class RepoSyncCommand(dnf.cli.Command):
 
     def _get_latest(self, query):
         """
-        return query with latest nonmodular package and all packages from latest version per stream
+        return union of these queries:
+        - the latest NEVRAs from non-modular packages
+        - the latest NEVRAs from each stream (this should not be needed
+          but the latest package NEVRAs might be part of older module version)
+        - all packages from the latest stream version
         """
         if not dnf.base.WITH_MODULES:
             return query.latest()
+
         query.apply()
         module_packages = self.base._moduleContainer.getModulePackages()
         all_artifacts = set()
@@ -219,15 +224,28 @@ class RepoSyncCommand(dnf.cli.Command):
             all_artifacts.update(module_package.getArtifacts())
             module_dict.setdefault(module_package.getNameStream(), {}).setdefault(
                 module_package.getVersionNum(), []).append(module_package)
-        non_modular_latest = query.filter(
+
+        # the latest NEVRAs from non-modular packages
+        latest_query = query.filter(
             pkg__neq=query.filter(nevra_strict=all_artifacts)).latest()
-        latest_artifacts = set()
+
+        # add all artifacts from the newest stream version
+        latest_stream_artifacts = set()
         for version_dict in module_dict.values():
             keys = sorted(version_dict.keys(), reverse=True)
             for module in version_dict[keys[0]]:
-                latest_artifacts.update(module.getArtifacts())
-        latest_modular_query = query.filter(nevra_strict=latest_artifacts)
-        return latest_modular_query.union(non_modular_latest)
+                latest_stream_artifacts.update(module.getArtifacts())
+        latest_query = latest_query.union(query.filter(nevra_strict=latest_stream_artifacts))
+
+        # add the latest NEVRAs from each stream
+        for version_dict in module_dict.values():
+            stream_artifacts = set()
+            for modules in version_dict.values():
+                for module in modules:
+                    stream_artifacts.update(module.getArtifacts())
+            latest_query = latest_query.union(query.filter(nevra_strict=stream_artifacts).latest())
+
+        return latest_query
 
     def get_pkglist(self, repo):
         query = self.base.sack.query(flags=hawkey.IGNORE_MODULAR_EXCLUDES).available().filterm(
