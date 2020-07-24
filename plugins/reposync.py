@@ -209,8 +209,9 @@ class RepoSyncCommand(dnf.cli.Command):
         """
         return union of these queries:
         - the latest NEVRAs from non-modular packages
-        - the latest NEVRAs from each stream (this should not be needed
-          but the latest package NEVRAs might be part of older module version)
+        - all packages from stream version with the latest package NEVRA
+          (this should not be needed but the latest package NEVRAs might be
+          part of an older module version)
         - all packages from the latest stream version
         """
         if not dnf.base.WITH_MODULES:
@@ -220,30 +221,44 @@ class RepoSyncCommand(dnf.cli.Command):
         module_packages = self.base._moduleContainer.getModulePackages()
         all_artifacts = set()
         module_dict = {}  # {NameStream: {Version: [modules]}}
+        artifact_version = {} # {artifact: {NameStream: [Version]}}
         for module_package in module_packages:
-            all_artifacts.update(module_package.getArtifacts())
+            artifacts = module_package.getArtifacts()
+            all_artifacts.update(artifacts)
             module_dict.setdefault(module_package.getNameStream(), {}).setdefault(
                 module_package.getVersionNum(), []).append(module_package)
+            for artifact in artifacts:
+                artifact_version.setdefault(artifact, {}).setdefault(
+                    module_package.getNameStream(), []).append(module_package.getVersionNum())
 
         # the latest NEVRAs from non-modular packages
         latest_query = query.filter(
             pkg__neq=query.filter(nevra_strict=all_artifacts)).latest()
 
-        # add all artifacts from the newest stream version
+        # artifacts from the newest version and those versions that contain an artifact
+        # with the highest NEVRA
         latest_stream_artifacts = set()
-        for version_dict in module_dict.values():
-            keys = sorted(version_dict.keys(), reverse=True)
-            for module in version_dict[keys[0]]:
-                latest_stream_artifacts.update(module.getArtifacts())
-        latest_query = latest_query.union(query.filter(nevra_strict=latest_stream_artifacts))
-
-        # add the latest NEVRAs from each stream
-        for version_dict in module_dict.values():
+        for namestream, version_dict in module_dict.items():
+            # versions that will be synchronized
+            versions = set()
+            # add the newest stream version
+            versions.add(sorted(version_dict.keys(), reverse=True)[0])
+            # collect all artifacts in all stream versions
             stream_artifacts = set()
             for modules in version_dict.values():
                 for module in modules:
                     stream_artifacts.update(module.getArtifacts())
-            latest_query = latest_query.union(query.filter(nevra_strict=stream_artifacts).latest())
+            # find versions to which the packages with the highest NEVRAs belong
+            for lp in query.filter(nevra_strict=stream_artifacts).latest():
+                #XXX contains modules.yaml allways full NEVRA (including epoch?)
+                nevra = "{0.name}-{0.epoch}:{0.version}-{0.release}.{0.arch}".format(lp)
+                versions.update(artifact_version[nevra][namestream])
+            # add all artifacts from selected versions for synchronization
+            for version, modules in version_dict.items():
+                if version in versions:
+                    for module in modules:
+                        latest_stream_artifacts.update(module.getArtifacts())
+        latest_query = latest_query.union(query.filter(nevra_strict=latest_stream_artifacts))
 
         return latest_query
 
