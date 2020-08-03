@@ -205,12 +205,12 @@ class RepoSyncCommand(dnf.cli.Command):
         repo._repo.downloadMetadata(repo_target)
         return True
 
-    def _get_latest(self, query):
+    def _get_latest(self, query, n=1):
         """
         return query with latest nonmodular package and all packages from latest version per stream
         """
         if not dnf.base.WITH_MODULES:
-            return query.latest()
+            return query.latest(limit=n)
         query.apply()
         module_packages = self.base._moduleContainer.getModulePackages()
         all_artifacts = set()
@@ -220,12 +220,13 @@ class RepoSyncCommand(dnf.cli.Command):
             module_dict.setdefault(module_package.getNameStream(), {}).setdefault(
                 module_package.getVersionNum(), []).append(module_package)
         non_modular_latest = query.filter(
-            pkg__neq=query.filter(nevra_strict=all_artifacts)).latest()
+            pkg__neq=query.filter(nevra_strict=all_artifacts)).latest(limit=n)
         latest_artifacts = set()
         for version_dict in module_dict.values():
             keys = sorted(version_dict.keys(), reverse=True)
-            for module in version_dict[keys[0]]:
-                latest_artifacts.update(module.getArtifacts())
+            for version in keys[0:n]:
+                for module in version_dict[version]:
+                    latest_artifacts.update(module.getArtifacts())
         latest_modular_query = query.filter(nevra_strict=latest_artifacts)
         return latest_modular_query.union(non_modular_latest)
 
